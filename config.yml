@@ -1,0 +1,7 @@
+encryption:
+  algorithm: "hybrid RSA+Kyber"   # Use our recommended PQC alternative
+  key_size: 3072                  # A secure key size
+logging:
+  level: "DEBUG"
+  hash: "SHA-256"                 # Secure hash function
+

@@ -1,0 +1,5 @@
+click
+rich
+pyOpenSSL
+semgrep
+rsa

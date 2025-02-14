@@ -1,4 +1,3 @@
-# report.py
 from rich.console import Console
 from rich.table import Table
 import os
@@ -49,6 +48,7 @@ def generate_rich_report(findings):
 
     for finding in findings:
         loc = finding.get("file", finding.get("component", "Unknown"))
+        # If the 'line' field is missing, it will default to "N/A"
         line = str(finding.get("line", "N/A"))
         msg = finding.get("message", "No message")
         risk = finding.get("risk", "Unknown")
@@ -64,6 +64,7 @@ def generate_html_report(findings, output_file="report.html"):
       <meta charset="utf-8">
       <title>Quantum Migration Audit Report</title>
       <style>
+        @page { size: A4 landscape; margin: 20px; }
         body { font-family: Arial, sans-serif; margin: 20px; }
         table { width: 100%; border-collapse: collapse; }
         th, td { border: 1px solid #dddddd; padding: 8px; text-align: left; }

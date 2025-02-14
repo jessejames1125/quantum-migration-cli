@@ -1,4 +1,4 @@
-# scanner/code_scanner.py
+#!/usr/bin/env python3
 import subprocess
 import yaml
 import json
@@ -6,8 +6,9 @@ import os
 import platform
 import fnmatch
 import logging
+from tqdm import tqdm
 
-# Set up logging to both console and a file if desired.
+# Set up logging: you can configure a file handler if desired.
 logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
 
 def run_semgrep(target_path, rule_file="pqc_rules.yml"):
@@ -15,17 +16,15 @@ def run_semgrep(target_path, rule_file="pqc_rules.yml"):
         print("Semgrep is not supported on Windows natively. Please run this under WSL or on Linux.")
         return {}
     
+    # Run semgrep on the target file using a rule file
     cmd = ["semgrep", "--include", "*.py", "--config", rule_file, "--json", target_path]
-    
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
         return json.loads(result.stdout)
-    
     except subprocess.CalledProcessError as e:
-        print(f"Error running Semgrep: {e}")
+        print(f"Error running Semgrep on {target_path}: {e}")
         print("Semgrep output:", e.stdout, e.stderr)
         return {}
-    
     except FileNotFoundError:
         print("Semgrep not found. Please install semgrep and ensure it is in your PATH.")
         return {}
@@ -62,59 +61,74 @@ def should_exclude(dir_path, exclude_patterns):
             return True
     return False
 
+def anonymize_path(full_path, levels=2):
+    """Return only the last 'levels' parts of the path to protect sensitive directories."""
+    parts = os.path.normpath(full_path).split(os.sep)
+    return os.sep.join(parts[-levels:]) if len(parts) >= levels else full_path
+
 def scan_codebase(root_path, config={}):
     """
-    Recursively scans the root_path using the following configurable options from the 'config' dictionary:
+    Recursively scans the root_path using configuration options provided in config:
       - include_patterns: list of glob patterns to include (default: ["*.py"])
       - exclude_directories: list of directory patterns to exclude (default: [])
-      - dry_run: if True, only log files without full scanning.
-      - verbose: if True, print detailed progress.
+      - dry_run: if True, only log files without scanning them
+      - verbose: if True, print detailed progress messages
+      - anonymize: if True, only show the last few path segments in the report
     """
     include_patterns = config.get("include_patterns", ["*.py"])
     exclude_dirs = config.get("exclude_directories", [])
     dry_run = config.get("dry_run", False)
     verbose = config.get("verbose", True)
+    anonymize = config.get("anonymize", False)
     
     findings = []
-    
     if not os.path.exists(root_path):
         print(f"Error: The specified root path '{root_path}' does not exist.")
         return findings
-    
+
+    # Collect all file paths to scan
+    file_list = []
     for dirpath, dirnames, filenames in os.walk(root_path):
-        # Exclude directories as per configuration.
+        # Exclude directories as per configuration
         dirnames[:] = [d for d in dirnames if not should_exclude(os.path.join(dirpath, d), exclude_dirs)]
-        if verbose:
-            print(f"Scanning directory: {dirpath}")
         for file in filenames:
-            if not should_include(file, include_patterns):
+            if should_include(file, include_patterns):
+                file_list.append(os.path.join(dirpath, file))
+    
+    if verbose:
+        print(f"Found {len(file_list)} files to scan under {root_path}.")
+    
+    for file_path in tqdm(file_list, desc="Scanning files", disable=not verbose):
+        try:
+            if not os.access(file_path, os.R_OK):
+                if verbose:
+                    print(f"Skipping unreadable file: {file_path}")
                 continue
-            file_path = os.path.join(dirpath, file)
-            try:
-                # Validate that file exists and is readable.
-                if not os.access(file_path, os.R_OK):
-                    if verbose:
-                        print(f"Skipping unreadable file: {file_path}")
-                    continue
-                if dry_run:
-                    print(f"[DRY RUN] Would scan: {file_path}")
-                    continue
-                # Run semgrep on the file.
-                result = run_semgrep(file_path)
-                for res in result.get("results", []):
-                    findings.append({
-                        "file": res.get("path", file_path),
-                        "line": str(res.get("start", {}).get("line", "N/A")),
-                        "message": res.get("extra", {}).get("message", "No message"),
-                        "risk": assess_risk(res)
-                    })
-            except Exception as e:
-                logging.error(f"Error scanning {file_path}: {e}")
+            if dry_run:
+                print(f"[DRY RUN] Would scan: {file_path}")
                 continue
+            # Run semgrep on the file
+            result = run_semgrep(file_path)
+            for res in result.get("results", []):
+                # Attempt to extract line number; default to "N/A" if missing.
+                line = res.get("start", {}).get("line")
+                line = str(line) if line is not None else "N/A"
+                findings.append({
+                    "file": anonymize_path(file_path) if anonymize else file_path,
+                    "line": line,
+                    "message": res.get("extra", {}).get("message", "No message"),
+                    "risk": assess_risk(res)
+                })
+        except Exception as e:
+            logging.error(f"Error scanning {file_path}: {e}")
+            continue
+
+    if verbose:
+        print("Read-only scan complete; no file modifications were performed.")
     return findings
 
 def load_config(config_file="config.yml"):
     with open(config_file, "r") as f:
         config = yaml.safe_load(f)
-    # Return the 'scan' section if it exists, else return the full config.
+    # Return the 'scan' section if available; otherwise, return the full config.
     return config.get("scan", config)

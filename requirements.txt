@@ -3,3 +3,7 @@ rich
 pyOpenSSL
 semgrep
 rsa
+pyyaml
+jinja2
+weasyprint  # Optional (for PDF output)
+

@@ -1,14 +1,20 @@
+# scanner/code_scanner.py
 import subprocess
+import yaml
 import json
 import os
 import platform
+import fnmatch
+import logging
+
+# Set up logging to both console and a file if desired.
+logging.basicConfig(level=logging.DEBUG, format='%(levelname)s: %(message)s')
 
 def run_semgrep(target_path, rule_file="pqc_rules.yml"):
     if platform.system() == "Windows":
         print("Semgrep is not supported on Windows natively. Please run this under WSL or on Linux.")
         return {}
     
-    # Restrict to Python files only.
     cmd = ["semgrep", "--include", "*.py", "--config", rule_file, "--json", target_path]
     
     try:
@@ -17,7 +23,7 @@ def run_semgrep(target_path, rule_file="pqc_rules.yml"):
     
     except subprocess.CalledProcessError as e:
         print(f"Error running Semgrep: {e}")
-        print("Semgrep output:", e.stdout, e.stderr)  # Print error details for debugging
+        print("Semgrep output:", e.stdout, e.stderr)
         return {}
     
     except FileNotFoundError:
@@ -25,13 +31,8 @@ def run_semgrep(target_path, rule_file="pqc_rules.yml"):
         return {}
 
 def assess_risk(result):
-    # Retrieve and normalize the message from semgrep.
     msg = result.get("extra", {}).get("message", "").lower().strip()
-
-    # Only flag messages that explicitly indicate insecure usage.
-    # If the message doesn't start with one of these known patterns, default to "Low".
     if msg.startswith("insecure rsa key usage detected"):
-        # If the message also mentions a secure alternative, mark as Low.
         if (">=3072" in msg) or ("kyber" in msg):
             return "Low"
         return "High"
@@ -47,24 +48,73 @@ def assess_risk(result):
         return "Low"
     elif msg.startswith("insecure hmac with md5 detected"):
         return "High"
-    # If the message does not match any known insecure pattern, treat it as Low risk.
     return "Low"
 
-def scan_codebase(path):
-    print(f"Scanning code in {path} for outdated cryptography...")
-    if not os.path.exists(path):
-        print(f"Path not found: {path}")
-        return []
-    
-    results = run_semgrep(path)
-    findings = []
+def should_include(file_name, include_patterns):
+    for pattern in include_patterns:
+        if fnmatch.fnmatch(file_name, pattern):
+            return True
+    return False
 
-    for result in results.get("results", []):
-        findings.append({
-            "file": result.get("path", "Unknown"),
-            "line": str(result.get("start", {}).get("line", "N/A")),
-            "message": result.get("extra", {}).get("message", "No message"),
-            "risk": assess_risk(result)
-        })
+def should_exclude(dir_path, exclude_patterns):
+    for pattern in exclude_patterns:
+        if pattern in dir_path or fnmatch.fnmatch(dir_path, pattern):
+            return True
+    return False
+
+def scan_codebase(root_path, config={}):
+    """
+    Recursively scans the root_path using the following configurable options from the 'config' dictionary:
+      - include_patterns: list of glob patterns to include (default: ["*.py"])
+      - exclude_directories: list of directory patterns to exclude (default: [])
+      - dry_run: if True, only log files without full scanning.
+      - verbose: if True, print detailed progress.
+    """
+    include_patterns = config.get("include_patterns", ["*.py"])
+    exclude_dirs = config.get("exclude_directories", [])
+    dry_run = config.get("dry_run", False)
+    verbose = config.get("verbose", True)
     
+    findings = []
+    
+    if not os.path.exists(root_path):
+        print(f"Error: The specified root path '{root_path}' does not exist.")
+        return findings
+    
+    for dirpath, dirnames, filenames in os.walk(root_path):
+        # Exclude directories as per configuration.
+        dirnames[:] = [d for d in dirnames if not should_exclude(os.path.join(dirpath, d), exclude_dirs)]
+        if verbose:
+            print(f"Scanning directory: {dirpath}")
+        for file in filenames:
+            if not should_include(file, include_patterns):
+                continue
+            file_path = os.path.join(dirpath, file)
+            try:
+                # Validate that file exists and is readable.
+                if not os.access(file_path, os.R_OK):
+                    if verbose:
+                        print(f"Skipping unreadable file: {file_path}")
+                    continue
+                if dry_run:
+                    print(f"[DRY RUN] Would scan: {file_path}")
+                    continue
+                # Run semgrep on the file.
+                result = run_semgrep(file_path)
+                for res in result.get("results", []):
+                    findings.append({
+                        "file": res.get("path", file_path),
+                        "line": str(res.get("start", {}).get("line", "N/A")),
+                        "message": res.get("extra", {}).get("message", "No message"),
+                        "risk": assess_risk(res)
+                    })
+            except Exception as e:
+                logging.error(f"Error scanning {file_path}: {e}")
+                continue
     return findings
+
+def load_config(config_file="config.yml"):
+    with open(config_file, "r") as f:
+        config = yaml.safe_load(f)
+    # Return the 'scan' section if it exists, else return the full config.
+    return config.get("scan", config)

@@ -1,6 +1,6 @@
 scan:
   # Root directory to scan (Make sure this is correctly mapped in WSL)
-  scan_root: "/mnt/c/Users/jesse/OneDrive/MASTER FOLDER/Quantum/Quantum Migration"
+  scan_root: "/mnt/c/Users/"
 
   # File types to include in the scan
   include_patterns:
